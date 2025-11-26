@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<extension type="plugin" group="system" version="3.0" method="upgrade">
+    <name>WIN Parser Import</name>
+    <author>Nikolay I. Dolzhnikov</author>
+    <creationDate>2025-09-22</creationDate>
+    <copyright>Copyright</copyright>
+    <license>GPL</license>
+    <version>1.0.0</version>
+    <description>API для добавления статей в Joomla из парсера</description>
+    <files>
+        <filename plugin="apicontent">apicontent.php</filename>
+    </files>
+</extension>
