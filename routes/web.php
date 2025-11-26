@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AiSettingsController;
+use App\Http\Controllers\DefaultSettingsController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\RewriteController;
 use App\Http\Controllers\SiteController;
@@ -32,6 +33,9 @@ Route::get('/sites/{site}/rewrite', [RewriteController::class, 'show'])
 Route::post('/sites/{site}/rewrite/run', [RewriteController::class, 'run'])
     ->name('sites.rewrite.run');
 
+Route::post('/sites/{site}/rewrite/settings', [RewriteController::class, 'updateSettings'])
+    ->name('sites.rewrite.settings');
+
 Route::post('/sites/{site}/rewrite/clear-logs', [RewriteController::class, 'clearLogs'])
     ->name('sites.rewrite.clear-logs');
 
@@ -49,6 +53,12 @@ Route::post('/sites/{site}/authors/sync', [SiteController::class, 'syncAuthors']
 
 Route::post('/sites/{site}/categories/sync', [SiteController::class, 'syncCategories'])
     ->name('sites.categories.sync');
+
+Route::get('/default-settings', [DefaultSettingsController::class, 'edit'])
+    ->name('default-settings');
+
+Route::post('/default-settings', [DefaultSettingsController::class, 'update'])
+    ->name('default-settings.save');
 
 Route::get('/ai-settings', [AiSettingsController::class, 'edit'])
     ->name('ai-settings');

@@ -43,6 +43,9 @@ class RewriteController extends Controller
                 'id' => $site->id,
                 'name' => $site->name,
                 'url' => $site->url,
+                'skip_external_links' => $site->skip_external_links,
+                'allowed_tags' => $site->allowed_tags,
+                'allowed_attributes' => $site->allowed_attributes,
             ],
             'authors' => $authors,
             'categories' => $categories,
@@ -146,6 +149,22 @@ class RewriteController extends Controller
         }
 
         return redirect()->back()->with('imported', $imported);
+    }
+
+    /**
+     * Update site settings.
+     */
+    public function updateSettings(Request $request, Site $site)
+    {
+        $validated = $request->validate([
+            'skip_external_links' => ['boolean'],
+            'allowed_tags' => ['nullable', 'string'],
+            'allowed_attributes' => ['nullable', 'string'],
+        ]);
+
+        $site->update($validated);
+
+        return redirect()->route('sites.rewrite', $site);
     }
 
     /**

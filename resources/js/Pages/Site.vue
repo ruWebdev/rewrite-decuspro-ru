@@ -21,6 +21,11 @@ const props = defineProps({
                 Сайты
                 </Link>
 
+                <Link :href="route('default-settings')" class="rounded px-3 py-1 hover:bg-gray-100"
+                    :class="{ 'bg-gray-900 text-white hover:bg-gray-900': $page.url.startsWith('/default-settings') }">
+                Настройки по умолчанию
+                </Link>
+
                 <Link :href="route('ai-settings')" class="rounded px-3 py-1 hover:bg-gray-100"
                     :class="{ 'bg-gray-900 text-white hover:bg-gray-900': $page.url.startsWith('/ai-settings') }">
                 Настройки ИИ

@@ -25,6 +25,17 @@ const props = defineProps({
     },
 });
 
+// Site settings form
+const settingsForm = useForm({
+    skip_external_links: props.site.skip_external_links ?? true,
+    allowed_tags: props.site.allowed_tags ?? '',
+    allowed_attributes: props.site.allowed_attributes ?? '',
+});
+
+const saveSettings = () => {
+    settingsForm.post(route('sites.rewrite.settings', props.site.id));
+};
+
 // Rewrite form
 const rewriteForm = useForm({
     author_id: null,
@@ -32,8 +43,21 @@ const rewriteForm = useForm({
     limit: null,
 });
 
+const isRewriting = ref(false);
+
 const runRewrite = () => {
-    rewriteForm.post(route('sites.rewrite.run', props.site.id));
+    isRewriting.value = true;
+    rewriteForm.post(route('sites.rewrite.run', props.site.id), {
+        onFinish: () => {
+            isRewriting.value = false;
+        },
+    });
+};
+
+const stopRewrite = () => {
+    if (confirm('Вы уверены, что хотите остановить рерайт?')) {
+        window.location.reload();
+    }
 };
 
 // Link form
@@ -118,6 +142,32 @@ const statusText = (status) => {
             return status;
     }
 };
+
+// Content modal for logs
+const showContentModal = ref(false);
+const contentModalTitle = ref('');
+const contentModalContent = ref('');
+
+const openOriginalModal = (log) => {
+    contentModalTitle.value = 'Оригинал: ' + (log.article_title || 'ID: ' + log.article_joomla_id);
+    contentModalContent.value = log.original_content || 'Контент не сохранён';
+    showContentModal.value = true;
+};
+
+const openResultModal = (log) => {
+    contentModalTitle.value = 'Результат: ' + (log.article_title || 'ID: ' + log.article_joomla_id);
+    contentModalContent.value = log.rewritten_content || 'Контент не сохранён';
+    showContentModal.value = true;
+};
+
+const closeContentModal = () => {
+    showContentModal.value = false;
+};
+
+// Подсчёт успешно переписанных статей
+const successCount = () => {
+    return props.logs.filter(log => log.status === 'success').length;
+};
 </script>
 
 <template>
@@ -130,6 +180,11 @@ const statusText = (status) => {
                 <Link :href="route('rewrite')" class="rounded px-3 py-1 hover:bg-gray-100"
                     :class="{ 'bg-gray-900 text-white hover:bg-gray-900': $page.url === '/' }">
                 Сайты
+                </Link>
+
+                <Link :href="route('default-settings')" class="rounded px-3 py-1 hover:bg-gray-100"
+                    :class="{ 'bg-gray-900 text-white hover:bg-gray-900': $page.url.startsWith('/default-settings') }">
+                Настройки по умолчанию
                 </Link>
 
                 <Link :href="route('ai-settings')" class="rounded px-3 py-1 hover:bg-gray-100"
@@ -181,6 +236,51 @@ const statusText = (status) => {
 
             <!-- Rewrite Tab -->
             <div v-if="activeTab === 'rewrite'" class="space-y-6">
+                <!-- Site Settings Card -->
+                <div class="rounded-lg border border-gray-200 bg-white p-6">
+                    <h2 class="mb-4 text-lg font-medium">Настройки сайта</h2>
+
+                    <form @submit.prevent="saveSettings" class="space-y-4">
+                        <div class="flex items-center gap-3">
+                            <input id="skip_external_links" type="checkbox" v-model="settingsForm.skip_external_links"
+                                class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" />
+                            <label for="skip_external_links" class="text-sm font-medium text-gray-700">
+                                Пропускать статьи с внешними ссылками
+                            </label>
+                        </div>
+
+                        <div class="grid gap-4 md:grid-cols-2">
+                            <div>
+                                <label for="allowed_tags" class="block text-sm font-medium text-gray-700">
+                                    Разрешённые теги
+                                </label>
+                                <input id="allowed_tags" type="text" v-model="settingsForm.allowed_tags"
+                                    placeholder="p,h2,h3,h4,h5,img,br,li,ul,ol"
+                                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm" />
+                                <p class="mt-1 text-xs text-gray-500">Теги через запятую</p>
+                            </div>
+
+                            <div>
+                                <label for="allowed_attributes" class="block text-sm font-medium text-gray-700">
+                                    Разрешённые атрибуты
+                                </label>
+                                <input id="allowed_attributes" type="text" v-model="settingsForm.allowed_attributes"
+                                    placeholder="src,alt"
+                                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm" />
+                                <p class="mt-1 text-xs text-gray-500">Атрибуты через запятую</p>
+                            </div>
+                        </div>
+
+                        <div>
+                            <button type="submit" :disabled="settingsForm.processing"
+                                class="inline-flex items-center rounded-md bg-gray-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-gray-500 disabled:opacity-75">
+                                Сохранить настройки
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Rewrite Parameters Card -->
                 <div class="rounded-lg border border-gray-200 bg-white p-6">
                     <h2 class="mb-4 text-lg font-medium">Параметры рерайта</h2>
 
@@ -221,26 +321,32 @@ const statusText = (status) => {
                         </div>
                     </div>
 
-                    <div class="mt-6">
-                        <button type="button" @click="runRewrite" :disabled="rewriteForm.processing"
+                    <div class="mt-6 flex items-center gap-3">
+                        <button type="button" @click="runRewrite" :disabled="isRewriting"
                             class="inline-flex items-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:opacity-75">
-                            <span v-if="rewriteForm.processing">Обработка...</span>
+                            <svg v-if="isRewriting" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
+                                xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
+                                    stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor"
+                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                                </path>
+                            </svg>
+                            <span v-if="isRewriting">Рерайт выполняется...</span>
                             <span v-else>Запустить рерайт</span>
+                        </button>
+                        <button v-if="isRewriting" type="button" @click="stopRewrite"
+                            class="inline-flex items-center rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2">
+                            <svg class="-ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                                viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                            Остановить рерайт
                         </button>
                     </div>
                 </div>
 
-                <div class="rounded-lg border border-yellow-200 bg-yellow-50 p-4">
-                    <h3 class="text-sm font-medium text-yellow-800">Важно</h3>
-                    <ul class="mt-2 list-disc pl-5 text-sm text-yellow-700 space-y-1">
-                        <li>Статьи с внешними ссылками (на другие домены) будут пропущены</li>
-                        <li>Разрешённые теги: p, h2, h3, h4, h5, img, br, li, ul, ol, i, em, table, tr, td, u, th,
-                            thead, tbody</li>
-                        <li>Разрешённые атрибуты: src</li>
-                        <li>Убедитесь, что авторы и категории загружены</li>
-                        <li>Настройте API ключ Deepseek и промпт в «Настройках ИИ»</li>
-                    </ul>
-                </div>
             </div>
 
             <!-- Links Tab -->
@@ -309,9 +415,14 @@ const statusText = (status) => {
             <!-- Logs Tab -->
             <div v-if="activeTab === 'logs'" class="space-y-4">
                 <div class="flex items-center justify-between">
-                    <p class="text-sm text-gray-600">
-                        Последние 50 записей лога рерайта.
-                    </p>
+                    <div>
+                        <p class="text-sm text-gray-600">
+                            Последние 50 записей лога рерайта.
+                        </p>
+                        <p class="text-sm font-medium text-green-600 mt-1">
+                            Успешно переписано статей: {{ successCount() }}
+                        </p>
+                    </div>
                     <Link v-if="props.logs.length" :href="route('sites.rewrite.clear-logs', props.site.id)"
                         method="post" as="button"
                         class="inline-flex items-center rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50">
@@ -339,6 +450,10 @@ const statusText = (status) => {
                                     class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
                                     Сообщение
                                 </th>
+                                <th
+                                    class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
+                                    Контент
+                                </th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-gray-200 bg-white">
@@ -360,9 +475,22 @@ const statusText = (status) => {
                                 <td class="px-4 py-2 text-sm text-gray-700">
                                     {{ log.message }}
                                 </td>
+                                <td class="px-4 py-2 text-sm">
+                                    <div v-if="log.original_content || log.rewritten_content" class="flex gap-2">
+                                        <button v-if="log.original_content" @click="openOriginalModal(log)"
+                                            class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200">
+                                            Оригинал
+                                        </button>
+                                        <button v-if="log.rewritten_content" @click="openResultModal(log)"
+                                            class="text-xs px-2 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200">
+                                            Результат
+                                        </button>
+                                    </div>
+                                    <span v-else class="text-gray-400">—</span>
+                                </td>
                             </tr>
                             <tr v-if="!props.logs.length">
-                                <td colspan="4" class="px-4 py-6 text-center text-sm text-gray-500">
+                                <td colspan="5" class="px-4 py-6 text-center text-sm text-gray-500">
                                     Логов пока нет.
                                 </td>
                             </tr>
@@ -440,6 +568,31 @@ const statusText = (status) => {
                         </button>
                     </div>
                 </form>
+            </div>
+        </div>
+
+        <!-- Content View Modal -->
+        <div v-if="showContentModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div class="w-full max-w-4xl max-h-[90vh] rounded-lg bg-white shadow-lg flex flex-col">
+                <div class="flex items-center justify-between border-b px-6 py-4">
+                    <h2 class="text-lg font-semibold">{{ contentModalTitle }}</h2>
+                    <button @click="closeContentModal" class="text-gray-400 hover:text-gray-600">
+                        <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="flex-1 overflow-auto p-6">
+                    <pre
+                        class="whitespace-pre-wrap text-sm text-gray-700 bg-gray-50 p-4 rounded-lg border font-mono overflow-x-auto">{{ contentModalContent }}</pre>
+                </div>
+                <div class="border-t px-6 py-4 flex justify-end">
+                    <button @click="closeContentModal"
+                        class="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                        Закрыть
+                    </button>
+                </div>
             </div>
         </div>
     </div>

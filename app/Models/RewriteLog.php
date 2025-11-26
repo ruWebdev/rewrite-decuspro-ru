@@ -15,6 +15,8 @@ class RewriteLog extends Model
         'article_title',
         'status',
         'message',
+        'original_content',
+        'rewritten_content',
     ];
 
     public function site()

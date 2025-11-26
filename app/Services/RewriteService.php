@@ -12,18 +12,27 @@ use Illuminate\Support\Facades\DB;
 
 class RewriteService
 {
-    private const ALLOWED_TAGS = ['p', 'h2', 'h3', 'h4', 'h5', 'img', 'br', 'li', 'ul', 'ol', 'i', 'em', 'table', 'tr', 'td', 'u', 'th', 'thead', 'tbody'];
-    private const ALLOWED_ATTRIBUTES = ['src'];
-
     private Site $site;
     private ?AiSetting $settings;
     private string $siteHost;
+    private array $allowedTags;
+    private array $allowedAttributes;
+    private bool $skipExternalLinks;
 
     public function __construct(Site $site)
     {
         $this->site = $site;
         $this->settings = AiSetting::first();
         $this->siteHost = parse_url($site->url, PHP_URL_HOST) ?: '';
+
+        // Use site-specific settings
+        $this->skipExternalLinks = $site->skip_external_links ?? true;
+        $this->allowedTags = $site->allowed_tags
+            ? array_map('trim', explode(',', $site->allowed_tags))
+            : ['p', 'h2', 'h3', 'h4', 'h5', 'img', 'br', 'li', 'ul', 'ol', 'i', 'em', 'table', 'tr', 'td', 'u', 'th', 'thead', 'tbody'];
+        $this->allowedAttributes = $site->allowed_attributes
+            ? array_map('trim', explode(',', $site->allowed_attributes))
+            : ['src'];
     }
 
     /**
@@ -121,9 +130,10 @@ class RewriteService
         $fulltext = $article['fulltext'] ?? '';
         $introtext = $article['introtext'] ?? '';
         $content = $introtext . $fulltext;
+        $originalContent = $content; // Сохраняем оригинал для логов
 
-        // Check for external links
-        if ($this->hasExternalLinks($content)) {
+        // Check for external links (if enabled)
+        if ($this->skipExternalLinks && $this->hasExternalLinks($content)) {
             $this->log($articleId, $articleTitle, 'skipped', 'Статья содержит внешние ссылки (рекламная)');
             $this->markArticleProcessed($articleId);
             return 'skipped';
@@ -133,29 +143,41 @@ class RewriteService
         $cleanedContent = $this->cleanHtml($content);
         $cleanedTitle = strip_tags($articleTitle);
 
-        // Get rewrite from AI
-        $rewrittenContent = $this->rewriteWithAi($cleanedTitle, $cleanedContent);
+        // Get rewrite from AI (returns array with title, description, body)
+        $rewriteResult = $this->rewriteWithAi($cleanedTitle, $cleanedContent);
 
-        if (!$rewrittenContent) {
+        if (!$rewriteResult) {
             $this->log($articleId, $articleTitle, 'error', 'Ошибка при рерайте через ИИ');
             return 'error';
         }
 
-        // Add interlinking
-        $rewrittenContent = $this->addInterlinking($rewrittenContent, $articleId);
+        $newTitle = $rewriteResult['title'];
+        $newDescription = $rewriteResult['description'];
+        $newBody = $rewriteResult['body'];
+
+        // Add interlinking to body
+        $newBody = $this->addInterlinking($newBody, $articleId);
+
+        // Формируем результат для логов (с учётом перелинковки)
+        $finalResult = [
+            'title' => $newTitle,
+            'description' => $newDescription,
+            'body' => $newBody,
+        ];
+        $rewrittenContent = json_encode($finalResult, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
         // Update article on Joomla
-        $updated = $this->updateArticle($articleId, $cleanedTitle, $rewrittenContent);
+        $updated = $this->updateArticle($articleId, $newTitle, $newBody, $newDescription);
 
         if (!$updated) {
-            $this->log($articleId, $articleTitle, 'error', 'Не удалось обновить статью на сайте');
+            $this->log($articleId, $articleTitle, 'error', 'Не удалось обновить статью на сайте', $originalContent, $rewrittenContent);
             return 'error';
         }
 
         // Mark as processed
         $this->markArticleProcessed($articleId);
 
-        $this->log($articleId, $articleTitle, 'success', 'Статья успешно обработана');
+        $this->log($articleId, $articleTitle, 'success', 'Статья успешно обработана', $originalContent, $rewrittenContent);
 
         return 'processed';
     }
@@ -217,27 +239,43 @@ class RewriteService
      */
     private function cleanHtml(string $content): string
     {
-        // Build allowed tags string
-        $allowedTagsStr = '<' . implode('><', self::ALLOWED_TAGS) . '>';
+        // Build allowed tags string for strip_tags
+        $allowedTagsStr = '<' . implode('><', $this->allowedTags) . '>';
 
         // Strip disallowed tags
         $content = strip_tags($content, $allowedTagsStr);
 
-        // Remove disallowed attributes
-        $content = preg_replace_callback(
-            '/<([a-z][a-z0-9]*)\s+([^>]*)>/i',
-            function ($matches) {
-                $tag = $matches[1];
-                $attrs = $matches[2];
+        // Remove disallowed attributes using DOMDocument for better parsing
+        if (empty($this->allowedAttributes)) {
+            // Если нет разрешённых атрибутов, удаляем все
+            $content = preg_replace('/<([a-z][a-z0-9]*)\s+[^>]*>/i', '<$1>', $content);
+            return trim($content);
+        }
 
-                // Parse attributes and keep only allowed ones
-                preg_match_all('/([a-z\-]+)=["\']([^"\']*)["\']|([a-z\-]+)/i', $attrs, $attrMatches, PREG_SET_ORDER);
+        $allowedAttributes = $this->allowedAttributes;
+
+        // Обрабатываем теги с атрибутами
+        $content = preg_replace_callback(
+            '/<([a-z][a-z0-9]*)(\s+[^>]*)>/i',
+            function ($matches) use ($allowedAttributes) {
+                $tag = $matches[1];
+                $attrsString = $matches[2];
+
+                // Парсим атрибуты более надёжным способом
+                // Поддерживаем: attr="value", attr='value', attr=value, attr
+                preg_match_all('/\s+([a-z\-_]+)(?:=(?:"([^"]*)"|\'([^\']*)\'|([^\s>]*)))?/i', $attrsString, $attrMatches, PREG_SET_ORDER);
 
                 $cleanAttrs = [];
                 foreach ($attrMatches as $attr) {
-                    $attrName = strtolower($attr[1] ?: $attr[3]);
-                    if (in_array($attrName, self::ALLOWED_ATTRIBUTES)) {
-                        $cleanAttrs[] = $attr[0];
+                    $attrName = strtolower($attr[1]);
+                    if (in_array($attrName, $allowedAttributes)) {
+                        // Получаем значение атрибута
+                        $value = $attr[2] ?? $attr[3] ?? $attr[4] ?? null;
+                        if ($value !== null) {
+                            $cleanAttrs[] = $attrName . '="' . htmlspecialchars($value, ENT_QUOTES, 'UTF-8') . '"';
+                        } else {
+                            $cleanAttrs[] = $attrName;
+                        }
                     }
                 }
 
@@ -250,13 +288,18 @@ class RewriteService
             $content
         );
 
+        // Убираем лишние пробелы и переносы строк
+        $content = preg_replace('/\s+/', ' ', $content);
+        $content = preg_replace('/>\s+</', '><', $content);
+
         return trim($content);
     }
 
     /**
      * Rewrite content using Deepseek AI.
+     * Returns array with keys: title, description, body
      */
-    private function rewriteWithAi(string $title, string $content): ?string
+    private function rewriteWithAi(string $title, string $content): ?array
     {
         if (!$this->settings || !$this->settings->deepseek_api) {
             throw new \Exception('API ключ Deepseek не настроен');
@@ -289,8 +332,35 @@ class RewriteService
         }
 
         $data = $response->json();
+        $aiContent = $data['choices'][0]['message']['content'] ?? null;
 
-        return $data['choices'][0]['message']['content'] ?? null;
+        if (!$aiContent) {
+            return null;
+        }
+
+        // Парсим JSON из ответа AI
+        // Удаляем возможные markdown блоки кода
+        $jsonContent = $aiContent;
+        if (preg_match('/```(?:json)?\s*([\s\S]*?)```/', $aiContent, $matches)) {
+            $jsonContent = trim($matches[1]);
+        }
+
+        $parsed = json_decode($jsonContent, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE || empty($parsed)) {
+            throw new \Exception('Не удалось распарсить JSON ответ от AI: ' . json_last_error_msg());
+        }
+
+        // Проверяем наличие обязательных полей
+        if (empty($parsed['title']) || empty($parsed['body'])) {
+            throw new \Exception('AI вернул неполный JSON (отсутствует title или body)');
+        }
+
+        return [
+            'title' => $parsed['title'],
+            'description' => $parsed['description'] ?? '',
+            'body' => $parsed['body'],
+        ];
     }
 
     /**
@@ -386,14 +456,21 @@ class RewriteService
     /**
      * Update article on Joomla.
      */
-    private function updateArticle(int $articleId, string $title, string $content): bool
+    private function updateArticle(int $articleId, string $title, string $body, string $description = ''): bool
     {
         $endpoint = rtrim($this->site->url, '/') . '/index.php';
 
-        $response = $this->makeJoomlaRequest('POST', $endpoint . '?option=com_api&task=article_update&id=' . $articleId, [
+        $data = [
             'title' => $title,
-            'fulltext' => $content,
-        ], true);
+            'introtext' => $body,
+        ];
+
+        // Добавляем description если есть
+        if (!empty($description)) {
+            $data['metadesc'] = $description;
+        }
+
+        $response = $this->makeJoomlaRequest('POST', $endpoint . '?option=com_api&task=article_update&id=' . $articleId, $data, true);
 
         return $response && ($response['status'] ?? null) === 'ok';
     }
@@ -449,7 +526,7 @@ class RewriteService
     /**
      * Log rewrite action.
      */
-    private function log(?int $articleId, ?string $title, string $status, string $message): void
+    private function log(?int $articleId, ?string $title, string $status, string $message, ?string $originalContent = null, ?string $rewrittenContent = null): void
     {
         RewriteLog::create([
             'site_id' => $this->site->id,
@@ -457,6 +534,8 @@ class RewriteService
             'article_title' => $title,
             'status' => $status,
             'message' => $message,
+            'original_content' => $originalContent,
+            'rewritten_content' => $rewrittenContent,
         ]);
     }
 }
