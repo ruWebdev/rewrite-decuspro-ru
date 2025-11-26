@@ -46,11 +46,29 @@ class RewriteService
             'errors' => 0,
         ];
 
+        // Get IDs of already processed articles for this site
+        $processedArticleIds = RewriteLog::query()
+            ->where('site_id', $this->site->id)
+            ->where('status', 'success')
+            ->whereNotNull('article_joomla_id')
+            ->pluck('article_joomla_id')
+            ->toArray();
+
         // Get articles from Joomla
         $articles = $this->fetchArticles($authorId, $categoryId, $limit);
 
         if (empty($articles)) {
             $this->log(null, null, 'skipped', 'Нет статей для обработки');
+            return $results;
+        }
+
+        // Filter out already processed articles
+        $articles = array_filter($articles, function ($article) use ($processedArticleIds) {
+            return !in_array($article['id'], $processedArticleIds);
+        });
+
+        if (empty($articles)) {
+            $this->log(null, null, 'skipped', 'Все статьи уже обработаны');
             return $results;
         }
 
