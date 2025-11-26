@@ -9,6 +9,7 @@ use App\Models\SiteAuthor;
 use App\Models\SiteCategory;
 use App\Services\RewriteService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 
 class RewriteController extends Controller
@@ -32,6 +33,18 @@ class RewriteController extends Controller
             ->where('site_id', $site->id)
             ->orderBy('created_at', 'desc')
             ->limit(50)
+            ->select([
+                'id',
+                'site_id',
+                'article_joomla_id',
+                'article_title',
+                'status',
+                'message',
+                'created_at',
+            ])
+            ->selectRaw('original_content IS NOT NULL as has_original_content')
+            ->selectRaw('cleaned_content IS NOT NULL as has_cleaned_content')
+            ->selectRaw('rewritten_content IS NOT NULL as has_rewritten_content')
             ->get();
 
         $links = RewriteLink::query()
@@ -175,5 +188,27 @@ class RewriteController extends Controller
         RewriteLog::where('site_id', $site->id)->delete();
 
         return redirect()->route('sites.rewrite', $site);
+    }
+
+    /**
+     * Return log content on demand (for modal view).
+     */
+    public function showLog(Request $request, RewriteLog $log)
+    {
+        $type = $request->query('type', 'original');
+
+        $columnMap = [
+            'original' => 'original_content',
+            'cleaned' => 'cleaned_content',
+            'rewritten' => 'rewritten_content',
+        ];
+
+        $column = $columnMap[$type] ?? $columnMap['original'];
+
+        return response()->json([
+            'id' => $log->id,
+            'type' => $type,
+            'content' => $log->{$column},
+        ]);
     }
 }

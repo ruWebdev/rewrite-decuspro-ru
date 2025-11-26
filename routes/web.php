@@ -39,6 +39,9 @@ Route::post('/sites/{site}/rewrite/settings', [RewriteController::class, 'update
 Route::post('/sites/{site}/rewrite/clear-logs', [RewriteController::class, 'clearLogs'])
     ->name('sites.rewrite.clear-logs');
 
+Route::get('/rewrite-logs/{log}', [RewriteController::class, 'showLog'])
+    ->name('rewrite-logs.show');
+
 Route::post('/rewrite-links', [RewriteController::class, 'storeLink'])
     ->name('rewrite-links.store');
 

@@ -1,6 +1,7 @@
 <script setup>
 import { Head, Link, useForm } from '@inertiajs/vue3';
 import { ref } from 'vue';
+import axios from 'axios';
 
 const props = defineProps({
     site: {
@@ -148,22 +149,32 @@ const showContentModal = ref(false);
 const contentModalTitle = ref('');
 const contentModalContent = ref('');
 
-const openOriginalModal = (log) => {
-    contentModalTitle.value = 'Оригинал: ' + (log.article_title || 'ID: ' + log.article_joomla_id);
-    contentModalContent.value = log.original_content || 'Контент не сохранён';
+const loadLogContent = async (log, type, titlePrefix) => {
+    contentModalTitle.value = titlePrefix + (log.article_title || 'ID: ' + log.article_joomla_id);
+    contentModalContent.value = 'Загрузка...';
     showContentModal.value = true;
+
+    try {
+        const response = await axios.get(route('rewrite-logs.show', log.id), {
+            params: { type },
+        });
+
+        contentModalContent.value = response.data.content || 'Контент не сохранён';
+    } catch (e) {
+        contentModalContent.value = 'Ошибка загрузки контента';
+    }
+};
+
+const openOriginalModal = (log) => {
+    loadLogContent(log, 'original', 'Оригинал: ');
 };
 
 const openResultModal = (log) => {
-    contentModalTitle.value = 'Результат: ' + (log.article_title || 'ID: ' + log.article_joomla_id);
-    contentModalContent.value = log.rewritten_content || 'Контент не сохранён';
-    showContentModal.value = true;
+    loadLogContent(log, 'rewritten', 'Результат: ');
 };
 
 const openCleanedModal = (log) => {
-    contentModalTitle.value = 'Очищенный контент: ' + (log.article_title || 'ID: ' + log.article_joomla_id);
-    contentModalContent.value = log.cleaned_content || 'Контент не сохранён';
-    showContentModal.value = true;
+    loadLogContent(log, 'cleaned', 'Очищенный контент: ');
 };
 
 const closeContentModal = () => {
@@ -486,17 +497,17 @@ const successCount = () => {
                                     {{ log.message }}
                                 </td>
                                 <td class="px-4 py-2 text-sm">
-                                    <div v-if="log.original_content || log.cleaned_content || log.rewritten_content"
+                                    <div v-if="log.has_original_content || log.has_cleaned_content || log.has_rewritten_content"
                                         class="flex flex-wrap gap-1">
-                                        <button v-if="log.original_content" @click="openOriginalModal(log)"
+                                        <button v-if="log.has_original_content" @click="openOriginalModal(log)"
                                             class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200">
                                             Оригинал
                                         </button>
-                                        <button v-if="log.cleaned_content" @click="openCleanedModal(log)"
+                                        <button v-if="log.has_cleaned_content" @click="openCleanedModal(log)"
                                             class="text-xs px-2 py-1 rounded bg-yellow-100 text-yellow-700 hover:bg-yellow-200">
                                             Очистка
                                         </button>
-                                        <button v-if="log.rewritten_content" @click="openResultModal(log)"
+                                        <button v-if="log.has_rewritten_content" @click="openResultModal(log)"
                                             class="text-xs px-2 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200">
                                             Результат
                                         </button>
