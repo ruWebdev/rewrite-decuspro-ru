@@ -164,20 +164,21 @@ class RewriteService
             'description' => $newDescription,
             'body' => $newBody,
         ];
-        $rewrittenContent = json_encode($finalResult, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        // JSON_UNESCAPED_SLASHES чтобы не экранировать слеши в URL
+        $rewrittenContent = json_encode($finalResult, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
 
         // Update article on Joomla
         $updated = $this->updateArticle($articleId, $newTitle, $newBody, $newDescription);
 
         if (!$updated) {
-            $this->log($articleId, $articleTitle, 'error', 'Не удалось обновить статью на сайте', $originalContent, $rewrittenContent);
+            $this->log($articleId, $articleTitle, 'error', 'Не удалось обновить статью на сайте', $originalContent, $cleanedContent, $rewrittenContent);
             return 'error';
         }
 
         // Mark as processed
         $this->markArticleProcessed($articleId);
 
-        $this->log($articleId, $articleTitle, 'success', 'Статья успешно обработана', $originalContent, $rewrittenContent);
+        $this->log($articleId, $articleTitle, 'success', 'Статья успешно обработана', $originalContent, $cleanedContent, $rewrittenContent);
 
         return 'processed';
     }
@@ -526,7 +527,7 @@ class RewriteService
     /**
      * Log rewrite action.
      */
-    private function log(?int $articleId, ?string $title, string $status, string $message, ?string $originalContent = null, ?string $rewrittenContent = null): void
+    private function log(?int $articleId, ?string $title, string $status, string $message, ?string $originalContent = null, ?string $cleanedContent = null, ?string $rewrittenContent = null): void
     {
         RewriteLog::create([
             'site_id' => $this->site->id,
@@ -535,6 +536,7 @@ class RewriteService
             'status' => $status,
             'message' => $message,
             'original_content' => $originalContent,
+            'cleaned_content' => $cleanedContent,
             'rewritten_content' => $rewrittenContent,
         ]);
     }

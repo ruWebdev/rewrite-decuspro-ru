@@ -160,6 +160,12 @@ const openResultModal = (log) => {
     showContentModal.value = true;
 };
 
+const openCleanedModal = (log) => {
+    contentModalTitle.value = 'Очищенный контент: ' + (log.article_title || 'ID: ' + log.article_joomla_id);
+    contentModalContent.value = log.cleaned_content || 'Контент не сохранён';
+    showContentModal.value = true;
+};
+
 const closeContentModal = () => {
     showContentModal.value = false;
 };
@@ -462,9 +468,13 @@ const successCount = () => {
                                     {{ new Date(log.created_at).toLocaleString('ru-RU') }}
                                 </td>
                                 <td class="px-4 py-2 text-sm text-gray-700">
-                                    <span v-if="log.article_title">{{ log.article_title }}</span>
-                                    <span v-else-if="log.article_joomla_id">ID: {{ log.article_joomla_id }}</span>
-                                    <span v-else class="text-gray-400">—</span>
+                                    <div>
+                                        <span v-if="log.article_title">{{ log.article_title }}</span>
+                                        <span v-else class="text-gray-400">—</span>
+                                    </div>
+                                    <div v-if="log.article_joomla_id" class="text-xs text-gray-500">
+                                        ID: {{ log.article_joomla_id }}
+                                    </div>
                                 </td>
                                 <td class="px-4 py-2 text-sm">
                                     <span :class="statusClass(log.status)"
@@ -476,10 +486,15 @@ const successCount = () => {
                                     {{ log.message }}
                                 </td>
                                 <td class="px-4 py-2 text-sm">
-                                    <div v-if="log.original_content || log.rewritten_content" class="flex gap-2">
+                                    <div v-if="log.original_content || log.cleaned_content || log.rewritten_content"
+                                        class="flex flex-wrap gap-1">
                                         <button v-if="log.original_content" @click="openOriginalModal(log)"
                                             class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200">
                                             Оригинал
+                                        </button>
+                                        <button v-if="log.cleaned_content" @click="openCleanedModal(log)"
+                                            class="text-xs px-2 py-1 rounded bg-yellow-100 text-yellow-700 hover:bg-yellow-200">
+                                            Очистка
                                         </button>
                                         <button v-if="log.rewritten_content" @click="openResultModal(log)"
                                             class="text-xs px-2 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200">

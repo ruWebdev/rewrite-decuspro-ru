@@ -16,6 +16,7 @@ class RewriteLog extends Model
         'status',
         'message',
         'original_content',
+        'cleaned_content',
         'rewritten_content',
     ];
 
