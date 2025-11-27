@@ -7,6 +7,7 @@ const props = defineProps({
         default: () => ({
             deepseek_api: '',
             prompt: '',
+            temperature: 0.7,
             domain_usage_limit: 1,
         }),
     },
@@ -15,6 +16,7 @@ const props = defineProps({
 const form = useForm({
     deepseek_api: props.settings?.deepseek_api ?? '',
     prompt: props.settings?.prompt ?? '',
+    temperature: props.settings?.temperature ?? 0.7,
     domain_usage_limit: props.settings?.domain_usage_limit ?? 1,
 });
 
@@ -72,6 +74,23 @@ const submit = () => {
 
                     <p v-if="form.errors.prompt" class="text-sm text-red-600">
                         {{ form.errors.prompt }}
+                    </p>
+                </div>
+
+                <div class="space-y-1">
+                    <label for="temperature" class="block text-sm font-medium text-gray-700">
+                        Температура
+                    </label>
+
+                    <input id="temperature" type="number" min="0" max="2" step="0.1" v-model="form.temperature"
+                        class="mt-1 block w-32 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm" />
+
+                    <p class="text-xs text-gray-500">
+                        Контролирует креативность ответов (0 — точные, 2 — креативные). Рекомендуется: 0.7
+                    </p>
+
+                    <p v-if="form.errors.temperature" class="text-sm text-red-600">
+                        {{ form.errors.temperature }}
                     </p>
                 </div>
 

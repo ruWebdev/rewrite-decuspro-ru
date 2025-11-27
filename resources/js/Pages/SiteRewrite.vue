@@ -1,5 +1,5 @@
 <script setup>
-import { Head, Link, useForm } from '@inertiajs/vue3';
+import { Head, Link, useForm, router } from '@inertiajs/vue3';
 import { ref } from 'vue';
 import axios from 'axios';
 
@@ -45,19 +45,47 @@ const rewriteForm = useForm({
 });
 
 const isRewriting = ref(false);
+let abortController = null;
 
 const runRewrite = () => {
     isRewriting.value = true;
+    abortController = new AbortController();
+
     rewriteForm.post(route('sites.rewrite.run', props.site.id), {
+        onCancelToken: (cancelToken) => {
+            // Store cancel token for potential cancellation
+            abortController.signal.addEventListener('abort', () => {
+                cancelToken.cancel();
+            });
+        },
         onFinish: () => {
             isRewriting.value = false;
+            abortController = null;
         },
     });
 };
 
-const stopRewrite = () => {
+const isStopping = ref(false);
+
+const stopRewrite = async () => {
     if (confirm('Вы уверены, что хотите остановить рерайт?')) {
-        window.location.reload();
+        isStopping.value = true;
+
+        try {
+            // Send stop signal to server
+            await axios.post(route('sites.rewrite.stop', props.site.id));
+        } catch (e) {
+            console.error('Failed to send stop signal:', e);
+        }
+
+        // Cancel client-side request
+        if (abortController) {
+            abortController.abort();
+        }
+        router.cancel();
+
+        isRewriting.value = false;
+        isStopping.value = false;
     }
 };
 
@@ -352,14 +380,23 @@ const successCount = () => {
                             <span v-if="isRewriting">Рерайт выполняется...</span>
                             <span v-else>Запустить рерайт</span>
                         </button>
-                        <button v-if="isRewriting" type="button" @click="stopRewrite"
-                            class="inline-flex items-center rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2">
-                            <svg class="-ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                        <button v-if="isRewriting" type="button" @click="stopRewrite" :disabled="isStopping"
+                            class="inline-flex items-center rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 disabled:opacity-75">
+                            <svg v-if="isStopping" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
+                                xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
+                                    stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor"
+                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                                </path>
+                            </svg>
+                            <svg v-else class="-ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none"
                                 viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                     d="M6 18L18 6M6 6l12 12" />
                             </svg>
-                            Остановить рерайт
+                            <span v-if="isStopping">Останавливается...</span>
+                            <span v-else>Остановить рерайт</span>
                         </button>
                     </div>
                 </div>

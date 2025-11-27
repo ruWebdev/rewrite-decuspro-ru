@@ -14,6 +14,7 @@ class AiSetting extends Model
     protected $fillable = [
         'deepseek_api',
         'prompt',
+        'temperature',
         'domain_usage_limit',
     ];
 }

@@ -9,6 +9,7 @@ use App\Models\SiteAuthor;
 use App\Models\SiteCategory;
 use App\Services\RewriteService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 
@@ -78,6 +79,9 @@ class RewriteController extends Controller
             'limit' => ['nullable', 'integer', 'min:1'],
         ]);
 
+        // Clear stop flag before starting
+        Cache::forget("rewrite_stop_{$site->id}");
+
         $service = new RewriteService($site);
 
         $results = $service->run(
@@ -89,6 +93,16 @@ class RewriteController extends Controller
         return redirect()
             ->route('sites.rewrite', $site)
             ->with('results', $results);
+    }
+
+    /**
+     * Stop the rewrite process.
+     */
+    public function stop(Site $site)
+    {
+        Cache::put("rewrite_stop_{$site->id}", true, 300); // 5 minutes TTL
+
+        return response()->json(['status' => 'stopped']);
     }
 
     /**

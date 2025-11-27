@@ -7,6 +7,7 @@ use App\Models\RewriteLink;
 use App\Models\RewriteLinkUsage;
 use App\Models\RewriteLog;
 use App\Models\Site;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 
@@ -73,6 +74,12 @@ class RewriteService
         }
 
         foreach ($articles as $article) {
+            // Check if stop was requested
+            if ($this->shouldStop()) {
+                $this->log(null, null, 'skipped', 'Рерайт остановлен пользователем');
+                break;
+            }
+
             try {
                 $result = $this->processArticle($article);
 
@@ -332,6 +339,8 @@ class RewriteService
 
         $userMessage = "Заголовок: {$title}\n\nТекст статьи:\n{$content}";
 
+        $temperature = $this->settings->temperature ?? 0.7;
+
         $response = Http::timeout(120)
             ->withHeaders([
                 'Authorization' => 'Bearer ' . $this->settings->deepseek_api,
@@ -343,7 +352,7 @@ class RewriteService
                     ['role' => 'system', 'content' => $prompt],
                     ['role' => 'user', 'content' => $userMessage],
                 ],
-                'temperature' => 0.7,
+                'temperature' => (float) $temperature,
             ]);
 
         if (!$response->successful()) {
@@ -540,6 +549,14 @@ class RewriteService
         }
 
         return null;
+    }
+
+    /**
+     * Check if stop was requested for this site.
+     */
+    private function shouldStop(): bool
+    {
+        return Cache::get("rewrite_stop_{$this->site->id}", false) === true;
     }
 
     /**

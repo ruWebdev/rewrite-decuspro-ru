@@ -18,10 +18,12 @@ class AiSettingsController extends Controller
             'settings' => $settings ? [
                 'deepseek_api' => $settings->deepseek_api,
                 'prompt' => $settings->prompt,
+                'temperature' => $settings->temperature ?? 0.7,
                 'domain_usage_limit' => $settings->domain_usage_limit ?? 1,
             ] : [
                 'deepseek_api' => '',
                 'prompt' => '',
+                'temperature' => 0.7,
                 'domain_usage_limit' => 1,
             ],
         ]);
@@ -35,6 +37,7 @@ class AiSettingsController extends Controller
         $validated = $request->validate([
             'deepseek_api' => ['nullable', 'string', 'max:255'],
             'prompt' => ['nullable', 'string'],
+            'temperature' => ['nullable', 'numeric', 'min:0', 'max:2'],
             'domain_usage_limit' => ['nullable', 'integer', 'min:1'],
         ]);
 
