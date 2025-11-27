@@ -1,7 +1,11 @@
 <script setup>
-import { Head, Link, useForm, router } from '@inertiajs/vue3';
-import { ref } from 'vue';
+import { Head, Link, useForm, router, usePage } from '@inertiajs/vue3';
+import { ref, computed } from 'vue';
 import axios from 'axios';
+
+// Flash messages
+const page = usePage();
+const flash = computed(() => page.props.flash || {});
 
 const props = defineProps({
     site: {
@@ -398,6 +402,36 @@ const successCount = () => {
                             <span v-if="isStopping">Останавливается...</span>
                             <span v-else>Остановить рерайт</span>
                         </button>
+                    </div>
+
+                    <!-- Results notification -->
+                    <div v-if="flash.results" class="mt-4 rounded-lg border p-4"
+                        :class="flash.results.processed >= (flash.results.target || 0) ? 'border-green-200 bg-green-50' : 'border-yellow-200 bg-yellow-50'">
+                        <h3 class="font-medium mb-2"
+                            :class="flash.results.processed >= (flash.results.target || 0) ? 'text-green-800' : 'text-yellow-800'">
+                            Результаты рерайта
+                        </h3>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                            <div>
+                                <span class="text-gray-600">Цель:</span>
+                                <span class="ml-1 font-semibold">{{ flash.results.target ?? 'Все' }}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-600">Успешно:</span>
+                                <span class="ml-1 font-semibold text-green-600">{{ flash.results.processed }}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-600">Пропущено:</span>
+                                <span class="ml-1 font-semibold text-yellow-600">{{ flash.results.skipped }}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-600">Ошибок:</span>
+                                <span class="ml-1 font-semibold text-red-600">{{ flash.results.errors }}</span>
+                            </div>
+                        </div>
+                        <p v-if="flash.results.processed < (flash.results.target || 0)" class="mt-2 text-sm text-yellow-700">
+                            Не удалось достичь целевого количества. Возможно, недостаточно статей для обработки.
+                        </p>
                     </div>
                 </div>
 

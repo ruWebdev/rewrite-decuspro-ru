@@ -51,6 +51,9 @@ class PlgSystemApicontent extends JPlugin
             case 'article_mark_processed':
                 $this->handleMarkProcessed();
                 break;
+            case 'articles_count':
+                $this->handleGetArticlesCount();
+                break;
             default:
                 return;
         }
@@ -261,6 +264,7 @@ class PlgSystemApicontent extends JPlugin
         $categoryId      = (int) $input->getInt('category', 0);
         $authorId        = (int) $input->getInt('author', 0);
         $limit           = (int) $input->getInt('limit', 0);
+        $offset          = (int) $input->getInt('offset', 0);
         $onlyUnprocessed = (int) $input->getInt('onlyUnprocessed', 1) === 1;
 
         $db = JFactory::getDbo();
@@ -293,9 +297,9 @@ class PlgSystemApicontent extends JPlugin
         $query->order($db->quoteName('id') . ' DESC');
 
         if ($limit > 0) {
-            $db->setQuery($query, 0, $limit);
+            $db->setQuery($query, $offset, $limit);
         } else {
-            $db->setQuery($query);
+            $db->setQuery($query, $offset);
         }
 
         $rows = (array) $db->loadAssocList();
@@ -314,6 +318,60 @@ class PlgSystemApicontent extends JPlugin
         }
 
         $this->sendResponse(['status' => 'ok', 'articles' => $articles]);
+    }
+
+    /**
+     * Возвращает общее количество статей (необработанных или всех) по фильтрам
+     */
+    private function handleGetArticlesCount()
+    {
+        if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+            $this->sendNoContentResponse();
+        }
+
+        $this->setCorsHeaders();
+
+        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+            $this->sendResponse(['status' => 'error', 'message' => 'Only GET allowed']);
+        }
+
+        $app   = JFactory::getApplication();
+        $input = $app->input;
+
+        $categoryId      = (int) $input->getInt('category', 0);
+        $authorId        = (int) $input->getInt('author', 0);
+        $onlyUnprocessed = (int) $input->getInt('onlyUnprocessed', 1) === 1;
+
+        $db = JFactory::getDbo();
+        $query = $db->getQuery(true)
+            ->select('COUNT(*)')
+            ->from($db->quoteName('#__content'))
+            ->where($db->quoteName('state') . ' = 1');
+
+        if ($categoryId > 0) {
+            $query->where($db->quoteName('catid') . ' = ' . (int) $categoryId);
+        }
+
+        if ($authorId > 0) {
+            $query->where($db->quoteName('created_by') . ' = ' . (int) $authorId);
+        }
+
+        $marker = 'oldrewrite_processed';
+
+        if ($onlyUnprocessed) {
+            $markerCondition = '('
+                . $db->quoteName('metakey') . ' IS NULL'
+                . ' OR ' . $db->quoteName('metakey') . " = ''"
+                . ' OR ' . $db->quoteName('metakey') . ' NOT LIKE ' . $db->quote('%' . $marker . '%')
+                . ')';
+
+            $query->where($markerCondition);
+        }
+
+        $db->setQuery($query);
+        $count = (int) $db->loadResult();
+
+        $this->sendResponse(['status' => 'ok', 'count' => $count]);
     }
 
     private function handleGetArticle()

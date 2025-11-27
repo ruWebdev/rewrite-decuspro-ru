@@ -38,6 +38,7 @@ class RewriteService
 
     /**
      * Run the rewrite process for the site.
+     * Гарантирует успешный рерайт указанного количества статей (или всех доступных).
      */
     public function run(?int $authorId, ?int $categoryId, ?int $limit): array
     {
@@ -45,57 +46,103 @@ class RewriteService
             'processed' => 0,
             'skipped' => 0,
             'errors' => 0,
+            'target' => $limit, // Целевое количество успешных рерайтов
         ];
 
-        // Get IDs of already processed articles for this site
-        $processedArticleIds = RewriteLog::query()
-            ->where('site_id', $this->site->id)
-            ->where('status', 'success')
-            ->whereNotNull('article_joomla_id')
-            ->pluck('article_joomla_id')
-            ->toArray();
+        // Получаем общее количество доступных статей
+        $totalAvailable = $this->fetchArticlesCount($authorId, $categoryId);
 
-        // Get articles from Joomla
-        $articles = $this->fetchArticles($authorId, $categoryId, $limit);
-
-        if (empty($articles)) {
+        if ($totalAvailable === 0) {
             $this->log(null, null, 'skipped', 'Нет статей для обработки');
             return $results;
         }
 
-        // Filter out already processed articles
-        $articles = array_filter($articles, function ($article) use ($processedArticleIds) {
-            return !in_array($article['id'], $processedArticleIds);
-        });
+        // Если limit не указан — обрабатываем все доступные статьи
+        $targetSuccessCount = $limit ?? $totalAvailable;
+        $results['target'] = $targetSuccessCount;
 
-        if (empty($articles)) {
-            $this->log(null, null, 'skipped', 'Все статьи уже обработаны');
-            return $results;
-        }
+        // Размер порции для запроса статей
+        $batchSize = 20;
+        $offset = 0;
 
-        foreach ($articles as $article) {
+        // Множество ID статей, которые уже пытались обработать в этой сессии (чтобы не зациклиться)
+        $attemptedArticleIds = [];
+
+        // Максимальное количество итераций для защиты от бесконечного цикла
+        $maxIterations = (int) ceil($totalAvailable / $batchSize) + 10;
+        $iteration = 0;
+
+        while ($results['processed'] < $targetSuccessCount && $iteration < $maxIterations) {
+            $iteration++;
+
             // Check if stop was requested
             if ($this->shouldStop()) {
                 $this->log(null, null, 'skipped', 'Рерайт остановлен пользователем');
                 break;
             }
 
-            try {
-                $result = $this->processArticle($article);
+            // Запрашиваем следующую порцию статей
+            $articles = $this->fetchArticles($authorId, $categoryId, $batchSize, $offset);
 
-                if ($result === 'processed') {
-                    $results['processed']++;
-                } elseif ($result === 'skipped') {
-                    $results['skipped']++;
+            if (empty($articles)) {
+                // Больше статей нет — выходим
+                break;
+            }
+
+            // Фильтруем статьи, которые уже пытались обработать
+            $newArticles = array_filter($articles, function ($article) use ($attemptedArticleIds) {
+                return !in_array($article['id'], $attemptedArticleIds);
+            });
+
+            if (empty($newArticles)) {
+                // Все статьи в этой порции уже пробовали — сдвигаем offset
+                $offset += $batchSize;
+                continue;
+            }
+
+            foreach ($newArticles as $article) {
+                // Проверяем, достигли ли целевого количества
+                if ($results['processed'] >= $targetSuccessCount) {
+                    break 2; // Выходим из обоих циклов
                 }
-            } catch (\Exception $e) {
-                $results['errors']++;
-                $this->log(
-                    $article['id'] ?? null,
-                    $article['title'] ?? null,
-                    'error',
-                    'Ошибка: ' . $e->getMessage()
-                );
+
+                // Check if stop was requested
+                if ($this->shouldStop()) {
+                    $this->log(null, null, 'skipped', 'Рерайт остановлен пользователем');
+                    break 2;
+                }
+
+                // Помечаем статью как попытку обработки
+                $attemptedArticleIds[] = $article['id'];
+
+                try {
+                    $result = $this->processArticle($article);
+
+                    if ($result === 'processed') {
+                        $results['processed']++;
+                    } elseif ($result === 'skipped') {
+                        $results['skipped']++;
+                    } elseif ($result === 'error') {
+                        $results['errors']++;
+                    }
+                } catch (\Exception $e) {
+                    $results['errors']++;
+                    $this->log(
+                        $article['id'] ?? null,
+                        $article['title'] ?? null,
+                        'error',
+                        'Ошибка: ' . $e->getMessage()
+                    );
+                }
+            }
+
+            // Сдвигаем offset для следующей порции
+            $offset += $batchSize;
+
+            // Если offset превысил общее количество, но цель не достигнута,
+            // значит больше статей нет
+            if ($offset >= $totalAvailable) {
+                break;
             }
         }
 
@@ -103,9 +150,39 @@ class RewriteService
     }
 
     /**
-     * Fetch articles from Joomla API.
+     * Fetch total count of available articles from Joomla API.
      */
-    private function fetchArticles(?int $authorId, ?int $categoryId, ?int $limit): array
+    private function fetchArticlesCount(?int $authorId, ?int $categoryId): int
+    {
+        $endpoint = rtrim($this->site->url, '/') . '/index.php';
+
+        $params = [
+            'option' => 'com_api',
+            'task' => 'articles_count',
+            'onlyUnprocessed' => 1,
+        ];
+
+        if ($authorId) {
+            $params['author'] = $authorId;
+        }
+
+        if ($categoryId) {
+            $params['category'] = $categoryId;
+        }
+
+        $response = $this->makeJoomlaRequest('GET', $endpoint, $params);
+
+        if (!$response || ($response['status'] ?? null) !== 'ok') {
+            return 0;
+        }
+
+        return (int) ($response['count'] ?? 0);
+    }
+
+    /**
+     * Fetch articles from Joomla API with pagination.
+     */
+    private function fetchArticles(?int $authorId, ?int $categoryId, ?int $limit, int $offset = 0): array
     {
         $endpoint = rtrim($this->site->url, '/') . '/index.php';
 
@@ -125,6 +202,10 @@ class RewriteService
 
         if ($limit) {
             $params['limit'] = $limit;
+        }
+
+        if ($offset > 0) {
+            $params['offset'] = $offset;
         }
 
         $response = $this->makeJoomlaRequest('GET', $endpoint, $params);
