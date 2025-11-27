@@ -341,22 +341,60 @@ class RewriteService
 
         $temperature = $this->settings->temperature ?? 0.7;
 
-        $response = Http::timeout(120)
-            ->withHeaders([
-                'Authorization' => 'Bearer ' . $this->settings->deepseek_api,
-                'Content-Type' => 'application/json',
-            ])
-            ->post('https://api.deepseek.com/chat/completions', [
-                'model' => 'deepseek-chat',
-                'messages' => [
-                    ['role' => 'system', 'content' => $prompt],
-                    ['role' => 'user', 'content' => $userMessage],
-                ],
-                'temperature' => (float) $temperature,
-            ]);
+        // Повторяем запрос к DeepSeek при 504/5xx и сетевых ошибках
+        $maxAttempts = 3;
+        $response = null;
+        $lastException = null;
 
-        if (!$response->successful()) {
-            throw new \Exception('Ошибка API Deepseek: ' . $response->status());
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            try {
+                $response = Http::timeout(60)
+                    ->withHeaders([
+                        'Authorization' => 'Bearer ' . $this->settings->deepseek_api,
+                        'Content-Type' => 'application/json',
+                    ])
+                    ->post('https://api.deepseek.com/chat/completions', [
+                        'model' => 'deepseek-chat',
+                        'messages' => [
+                            ['role' => 'system', 'content' => $prompt],
+                            ['role' => 'user', 'content' => $userMessage],
+                        ],
+                        'temperature' => (float) $temperature,
+                    ]);
+
+                if ($response->successful()) {
+                    // Успешный ответ, выходим из цикла
+                    break;
+                }
+
+                $status = $response->status();
+
+                // При 504 и других 5xx пробуем ещё раз (если остались попытки)
+                if (($status === 504 || $status >= 500) && $attempt < $maxAttempts) {
+                    continue;
+                }
+
+                // Неретриабельная ошибка или последняя попытка
+                throw new \Exception('Ошибка API Deepseek: ' . $status);
+            } catch (\Exception $e) {
+                $lastException = $e;
+
+                // На последней попытке пробрасываем исключение
+                if ($attempt >= $maxAttempts) {
+                    throw new \Exception('Ошибка API Deepseek: ' . $e->getMessage(), 0, $e);
+                }
+
+                // Иначе продолжаем цикл (повторная попытка)
+                continue;
+            }
+        }
+
+        if (!$response || !$response->successful()) {
+            if ($lastException) {
+                throw new \Exception('Ошибка API Deepseek: ' . $lastException->getMessage(), 0, $lastException);
+            }
+
+            throw new \Exception('Ошибка API Deepseek: неизвестная ошибка');
         }
 
         $data = $response->json();

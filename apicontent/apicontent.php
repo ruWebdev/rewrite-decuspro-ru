@@ -277,6 +277,19 @@ class PlgSystemApicontent extends JPlugin
             $query->where($db->quoteName('created_by') . ' = ' . (int) $authorId);
         }
 
+        // Фильтруем уже переписанные статьи по маркеру oldrewrite_processed до применения LIMIT
+        $marker = 'oldrewrite_processed';
+
+        if ($onlyUnprocessed) {
+            $markerCondition = '('
+                . $db->quoteName('metakey') . ' IS NULL'
+                . ' OR ' . $db->quoteName('metakey') . " = ''"
+                . ' OR ' . $db->quoteName('metakey') . ' NOT LIKE ' . $db->quote('%' . $marker . '%')
+                . ')';
+
+            $query->where($markerCondition);
+        }
+
         $query->order($db->quoteName('id') . ' DESC');
 
         if ($limit > 0) {
@@ -288,14 +301,8 @@ class PlgSystemApicontent extends JPlugin
         $rows = (array) $db->loadAssocList();
 
         $articles = [];
-        $marker = 'oldrewrite_processed';
 
         foreach ($rows as $row) {
-            $metakey = isset($row['metakey']) ? (string) $row['metakey'] : '';
-            if ($onlyUnprocessed && stripos($metakey, $marker) !== false) {
-                continue;
-            }
-
             $id = (int) $row['id'];
             $articles[] = [
                 'id'       => $id,
@@ -381,8 +388,16 @@ class PlgSystemApicontent extends JPlugin
             $this->sendResponse(['status' => 'error', 'message' => 'Invalid JSON']);
         }
 
-        $title    = isset($data['title']) ? trim((string) $data['title']) : '';
-        $fulltext = isset($data['fulltext']) ? (string) $data['fulltext'] : '';
+        $title = isset($data['title']) ? trim((string) $data['title']) : '';
+
+        // Основной текст статьи: сначала пытаемся взять fulltext,
+        // если его нет — используем introtext как источник для полного текста
+        $fulltext = '';
+        if (isset($data['fulltext'])) {
+            $fulltext = (string) $data['fulltext'];
+        } elseif (isset($data['introtext'])) {
+            $fulltext = (string) $data['introtext'];
+        }
 
         $article = JTable::getInstance('content');
         if (!$article->load($id)) {
@@ -394,8 +409,8 @@ class PlgSystemApicontent extends JPlugin
             $article->alias = JFilterOutput::stringURLSafe($title);
         }
 
-        $article->introtext = '';
-        $article->fulltext  = $fulltext;
+        // Записываем результат рерайта в introtext
+        $article->introtext = $fulltext;
         $article->modified  = JFactory::getDate()->toSql();
 
         try {
