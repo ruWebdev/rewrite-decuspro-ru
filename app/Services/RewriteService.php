@@ -476,7 +476,71 @@ class RewriteService
     }
 
     /**
-     * Rewrite content using Deepseek AI.
+     * Estimate token count (rough approximation: 1 token ≈ 4 chars for Russian text)
+     */
+    private function estimateTokens(string $text): int
+    {
+        return (int) ceil(mb_strlen($text) / 3);
+    }
+
+    /**
+     * Split content into chunks by paragraphs, respecting max token limit.
+     */
+    private function splitContentIntoChunks(string $content, int $maxTokensPerChunk = 2000): array
+    {
+        // Разбиваем по параграфам (</p>, <br>, переносы строк)
+        $paragraphs = preg_split('/(<\/p>|<br\s*\/?>|\n\n)/i', $content, -1, PREG_SPLIT_DELIM_CAPTURE);
+
+        $chunks = [];
+        $currentChunk = '';
+        $currentTokens = 0;
+
+        foreach ($paragraphs as $paragraph) {
+            $paragraphTokens = $this->estimateTokens($paragraph);
+
+            // Если один параграф слишком большой, разбиваем его по предложениям
+            if ($paragraphTokens > $maxTokensPerChunk) {
+                if ($currentChunk) {
+                    $chunks[] = $currentChunk;
+                    $currentChunk = '';
+                    $currentTokens = 0;
+                }
+
+                // Разбиваем большой параграф по предложениям
+                $sentences = preg_split('/(?<=[.!?])\s+/u', $paragraph);
+                foreach ($sentences as $sentence) {
+                    $sentenceTokens = $this->estimateTokens($sentence);
+                    if ($currentTokens + $sentenceTokens > $maxTokensPerChunk && $currentChunk) {
+                        $chunks[] = $currentChunk;
+                        $currentChunk = $sentence;
+                        $currentTokens = $sentenceTokens;
+                    } else {
+                        $currentChunk .= ($currentChunk ? ' ' : '') . $sentence;
+                        $currentTokens += $sentenceTokens;
+                    }
+                }
+                continue;
+            }
+
+            if ($currentTokens + $paragraphTokens > $maxTokensPerChunk && $currentChunk) {
+                $chunks[] = $currentChunk;
+                $currentChunk = $paragraph;
+                $currentTokens = $paragraphTokens;
+            } else {
+                $currentChunk .= $paragraph;
+                $currentTokens += $paragraphTokens;
+            }
+        }
+
+        if ($currentChunk) {
+            $chunks[] = $currentChunk;
+        }
+
+        return $chunks ?: [$content];
+    }
+
+    /**
+     * Rewrite content using Deepseek AI with streaming support.
      * Returns array with keys: title, description, body
      */
     private function rewriteWithAi(string $title, string $content): ?array
@@ -489,76 +553,200 @@ class RewriteService
             throw new \Exception('Промпт не настроен');
         }
 
+        $contentTokens = $this->estimateTokens($content);
+        $maxChunkTokens = 2500; // Максимум токенов на чанк
+
+        // Если статья короткая, обрабатываем целиком
+        if ($contentTokens <= $maxChunkTokens) {
+            return $this->rewriteSingleChunk($title, $content, true);
+        }
+
+        // Разбиваем длинную статью на части
+        $chunks = $this->splitContentIntoChunks($content, $maxChunkTokens);
+
+        // Сначала получаем новый заголовок и description на основе первого чанка
+        $firstResult = $this->rewriteSingleChunk($title, $chunks[0], true);
+
+        if (!$firstResult) {
+            throw new \Exception('Не удалось переписать первую часть статьи');
+        }
+
+        $newTitle = $firstResult['title'];
+        $newDescription = $firstResult['description'];
+        $rewrittenParts = [$firstResult['body']];
+
+        // Переписываем остальные части (только body)
+        for ($i = 1; $i < count($chunks); $i++) {
+            $chunkResult = $this->rewriteSingleChunk($title, $chunks[$i], false);
+            if ($chunkResult && !empty($chunkResult['body'])) {
+                $rewrittenParts[] = $chunkResult['body'];
+            } else {
+                // Если не удалось переписать часть, используем оригинал
+                $rewrittenParts[] = $chunks[$i];
+            }
+        }
+
+        return [
+            'title' => $newTitle,
+            'description' => $newDescription,
+            'body' => implode("\n\n", $rewrittenParts),
+        ];
+    }
+
+    /**
+     * Rewrite a single chunk of content using Deepseek AI with streaming.
+     */
+    private function rewriteSingleChunk(string $title, string $content, bool $includeTitle): ?array
+    {
         $prompt = $this->settings->prompt;
-
-        $userMessage = "Заголовок: {$title}\n\nТекст статьи:\n{$content}";
-
         $temperature = $this->settings->temperature ?? 0.7;
 
-        // Повторяем запрос к DeepSeek при 504/5xx и сетевых ошибках
-        $maxAttempts = 3;
-        $response = null;
+        if ($includeTitle) {
+            $userMessage = "Заголовок: {$title}\n\nТекст статьи:\n{$content}";
+        } else {
+            // Для последующих чанков просим только переписать текст
+            $userMessage = "Перепиши следующий текст в том же стиле, сохраняя смысл. Верни только переписанный текст без JSON:\n\n{$content}";
+        }
+
+        $maxAttempts = 5;
         $lastException = null;
 
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
             try {
-                $response = Http::timeout(180)
-                    ->withHeaders([
-                        'Authorization' => 'Bearer ' . $this->settings->deepseek_api,
-                        'Content-Type' => 'application/json',
-                    ])
-                    ->post('https://api.deepseek.com/chat/completions', [
-                        'model' => 'deepseek-chat',
-                        'messages' => [
-                            ['role' => 'system', 'content' => $prompt],
-                            ['role' => 'user', 'content' => $userMessage],
-                        ],
-                        'temperature' => (float) $temperature,
-                    ]);
+                // Используем streaming для избежания таймаутов
+                $aiContent = $this->callDeepseekWithStreaming(
+                    $prompt,
+                    $userMessage,
+                    $temperature,
+                    $includeTitle ? 4096 : 3000 // max_tokens
+                );
 
-                if ($response->successful()) {
-                    // Успешный ответ, выходим из цикла
-                    break;
+                if (!$aiContent) {
+                    throw new \Exception('Пустой ответ от API');
                 }
 
-                $status = $response->status();
-
-                // При 504 и других 5xx пробуем ещё раз (если остались попытки)
-                if (($status === 504 || $status >= 500) && $attempt < $maxAttempts) {
-                    continue;
+                if ($includeTitle) {
+                    // Парсим JSON из ответа AI
+                    return $this->parseAiJsonResponse($aiContent);
+                } else {
+                    // Для чанков без заголовка возвращаем просто текст
+                    return [
+                        'title' => '',
+                        'description' => '',
+                        'body' => trim($aiContent),
+                    ];
                 }
-
-                // Неретриабельная ошибка или последняя попытка
-                throw new \Exception('Ошибка API Deepseek: ' . $status);
             } catch (\Exception $e) {
                 $lastException = $e;
 
-                // На последней попытке пробрасываем исключение
-                if ($attempt >= $maxAttempts) {
-                    throw new \Exception('Ошибка API Deepseek: ' . $e->getMessage(), 0, $e);
+                // Экспоненциальная задержка перед повторной попыткой
+                if ($attempt < $maxAttempts) {
+                    $delay = min(pow(2, $attempt) * 1000, 10000); // 2s, 4s, 8s, 10s max
+                    usleep($delay * 1000);
+                    continue;
+                }
+            }
+        }
+
+        throw new \Exception('Ошибка API Deepseek после ' . $maxAttempts . ' попыток: ' . ($lastException ? $lastException->getMessage() : 'неизвестная ошибка'));
+    }
+
+    /**
+     * Call Deepseek API with streaming to avoid timeouts.
+     */
+    private function callDeepseekWithStreaming(string $systemPrompt, string $userMessage, float $temperature, int $maxTokens): string
+    {
+        $apiKey = $this->settings->deepseek_api;
+
+        // Используем cURL для streaming
+        $ch = curl_init();
+
+        $postData = json_encode([
+            'model' => 'deepseek-chat',
+            'messages' => [
+                ['role' => 'system', 'content' => $systemPrompt],
+                ['role' => 'user', 'content' => $userMessage],
+            ],
+            'temperature' => $temperature,
+            'max_tokens' => $maxTokens,
+            'stream' => true,
+        ]);
+
+        curl_setopt_array($ch, [
+            CURLOPT_URL => 'https://api.deepseek.com/chat/completions',
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $postData,
+            CURLOPT_HTTPHEADER => [
+                'Authorization: Bearer ' . $apiKey,
+                'Content-Type: application/json',
+                'Accept: text/event-stream',
+            ],
+            CURLOPT_RETURNTRANSFER => false,
+            CURLOPT_TIMEOUT => 300, // 5 минут общий таймаут
+            CURLOPT_CONNECTTIMEOUT => 30,
+            CURLOPT_TCP_KEEPALIVE => 1,
+            CURLOPT_TCP_KEEPIDLE => 60,
+            CURLOPT_TCP_KEEPINTVL => 30,
+        ]);
+
+        $fullContent = '';
+        $buffer = '';
+
+        // Callback для обработки streaming данных
+        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use (&$fullContent, &$buffer) {
+            $buffer .= $data;
+
+            // Обрабатываем SSE события
+            while (($pos = strpos($buffer, "\n")) !== false) {
+                $line = substr($buffer, 0, $pos);
+                $buffer = substr($buffer, $pos + 1);
+
+                $line = trim($line);
+
+                // Пропускаем пустые строки и keep-alive
+                if (empty($line) || $line === ': keep-alive') {
+                    continue;
                 }
 
-                // Иначе продолжаем цикл (повторная попытка)
-                continue;
+                // Парсим SSE данные
+                if (strpos($line, 'data: ') === 0) {
+                    $jsonStr = substr($line, 6);
+
+                    if ($jsonStr === '[DONE]') {
+                        continue;
+                    }
+
+                    $json = json_decode($jsonStr, true);
+                    if ($json && isset($json['choices'][0]['delta']['content'])) {
+                        $fullContent .= $json['choices'][0]['delta']['content'];
+                    }
+                }
             }
+
+            return strlen($data);
+        });
+
+        $result = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($error) {
+            throw new \Exception('cURL ошибка: ' . $error);
         }
 
-        if (!$response || !$response->successful()) {
-            if ($lastException) {
-                throw new \Exception('Ошибка API Deepseek: ' . $lastException->getMessage(), 0, $lastException);
-            }
-
-            throw new \Exception('Ошибка API Deepseek: неизвестная ошибка');
+        if ($httpCode >= 400) {
+            throw new \Exception('HTTP ошибка: ' . $httpCode);
         }
 
-        $data = $response->json();
-        $aiContent = $data['choices'][0]['message']['content'] ?? null;
+        return $fullContent;
+    }
 
-        if (!$aiContent) {
-            return null;
-        }
-
-        // Парсим JSON из ответа AI
+    /**
+     * Parse JSON response from AI, handling markdown code blocks.
+     */
+    private function parseAiJsonResponse(string $aiContent): array
+    {
         // Удаляем возможные markdown блоки кода
         $jsonContent = $aiContent;
         if (preg_match('/```(?:json)?\s*([\s\S]*?)```/', $aiContent, $matches)) {
@@ -584,7 +772,7 @@ class RewriteService
     }
 
     /**
-     * Add interlinking to content.
+     * Add interlinking to content using streaming API.
      */
     private function addInterlinking(string $content, int $articleId): string
     {
@@ -601,31 +789,19 @@ class RewriteService
             'article_joomla_id' => $articleId,
         ]);
 
-        // Add link to content via additional AI request
+        // Add link to content via additional AI request with streaming
         $linkPrompt = "Впиши в основной текст органично этот URL \"{$link->url}\" в виде гиперссылки. Верни только обновлённый текст без пояснений.";
 
         try {
-            $response = Http::timeout(180)
-                ->withHeaders([
-                    'Authorization' => 'Bearer ' . $this->settings->deepseek_api,
-                    'Content-Type' => 'application/json',
-                ])
-                ->post('https://api.deepseek.com/chat/completions', [
-                    'model' => 'deepseek-chat',
-                    'messages' => [
-                        ['role' => 'system', 'content' => $linkPrompt],
-                        ['role' => 'user', 'content' => $content],
-                    ],
-                    'temperature' => 0.5,
-                ]);
+            $newContent = $this->callDeepseekWithStreaming(
+                $linkPrompt,
+                $content,
+                0.5,
+                4096
+            );
 
-            if ($response->successful()) {
-                $data = $response->json();
-                $newContent = $data['choices'][0]['message']['content'] ?? null;
-
-                if ($newContent) {
-                    return $newContent;
-                }
+            if ($newContent) {
+                return $newContent;
             }
         } catch (\Exception $e) {
             // If interlinking fails, return original content
