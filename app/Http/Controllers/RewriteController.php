@@ -106,6 +106,29 @@ class RewriteController extends Controller
     }
 
     /**
+     * Rewrite a single article (for JS mode).
+     * Returns JSON with result status.
+     */
+    public function rewriteOne(Request $request, Site $site)
+    {
+        $validated = $request->validate([
+            'author_id' => ['nullable', 'integer'],
+            'category_id' => ['nullable', 'integer'],
+            'offset' => ['nullable', 'integer', 'min:0'],
+        ]);
+
+        $service = new RewriteService($site);
+
+        $result = $service->runOne(
+            $validated['author_id'] ?? null,
+            $validated['category_id'] ?? null,
+            $validated['offset'] ?? 0
+        );
+
+        return response()->json($result);
+    }
+
+    /**
      * Store a new rewrite link.
      */
     public function storeLink(Request $request)

@@ -36,6 +36,9 @@ Route::post('/sites/{site}/rewrite/run', [RewriteController::class, 'run'])
 Route::post('/sites/{site}/rewrite/stop', [RewriteController::class, 'stop'])
     ->name('sites.rewrite.stop');
 
+Route::post('/sites/{site}/rewrite/one', [RewriteController::class, 'rewriteOne'])
+    ->name('sites.rewrite.one');
+
 Route::post('/sites/{site}/rewrite/settings', [RewriteController::class, 'updateSettings'])
     ->name('sites.rewrite.settings');
 

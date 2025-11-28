@@ -150,6 +150,79 @@ class RewriteService
     }
 
     /**
+     * Run the rewrite process for a single article (JS mode).
+     * Returns array with status and info for frontend progress tracking.
+     */
+    public function runOne(?int $authorId, ?int $categoryId, int $offset = 0): array
+    {
+        $result = [
+            'status' => 'done',      // 'processed', 'skipped', 'error', 'done' (no more articles)
+            'message' => '',
+            'article_id' => null,
+            'article_title' => null,
+            'has_more' => false,     // есть ли ещё статьи для обработки
+            'total' => 0,            // общее количество необработанных статей
+        ];
+
+        // Получаем общее количество доступных статей
+        $totalAvailable = $this->fetchArticlesCount($authorId, $categoryId);
+        $result['total'] = $totalAvailable;
+
+        if ($totalAvailable === 0) {
+            $result['status'] = 'done';
+            $result['message'] = 'Нет статей для обработки';
+            return $result;
+        }
+
+        // Запрашиваем одну статью с указанным offset
+        try {
+            $articles = $this->fetchArticles($authorId, $categoryId, 1, $offset);
+        } catch (\Exception $e) {
+            $result['status'] = 'error';
+            $result['message'] = $e->getMessage();
+            return $result;
+        }
+
+        if (empty($articles)) {
+            $result['status'] = 'done';
+            $result['message'] = 'Больше статей нет';
+            return $result;
+        }
+
+        $article = $articles[0];
+        $result['article_id'] = $article['id'] ?? null;
+        $result['article_title'] = $article['title'] ?? null;
+
+        // Проверяем, есть ли ещё статьи после этой
+        $result['has_more'] = $totalAvailable > 1;
+
+        try {
+            $processResult = $this->processArticle($article);
+
+            $result['status'] = $processResult; // 'processed', 'skipped', 'error'
+
+            if ($processResult === 'processed') {
+                $result['message'] = 'Статья успешно обработана';
+            } elseif ($processResult === 'skipped') {
+                $result['message'] = 'Статья пропущена';
+            } else {
+                $result['message'] = 'Ошибка при обработке статьи';
+            }
+        } catch (\Exception $e) {
+            $result['status'] = 'error';
+            $result['message'] = 'Ошибка: ' . $e->getMessage();
+            $this->log(
+                $article['id'] ?? null,
+                $article['title'] ?? null,
+                'error',
+                'Ошибка: ' . $e->getMessage()
+            );
+        }
+
+        return $result;
+    }
+
+    /**
      * Fetch total count of available articles from Joomla API.
      */
     private function fetchArticlesCount(?int $authorId, ?int $categoryId): int

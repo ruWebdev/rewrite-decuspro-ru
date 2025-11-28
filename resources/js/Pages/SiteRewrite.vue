@@ -48,10 +48,31 @@ const rewriteForm = useForm({
     limit: null,
 });
 
+// JS mode toggle
+const useJsMode = ref(true); // По умолчанию включен JS-режим
+
 const isRewriting = ref(false);
 let abortController = null;
 
+// JS mode progress tracking
+const jsProgress = ref({
+    processed: 0,
+    skipped: 0,
+    errors: 0,
+    total: 0,
+    current: '',
+    stopped: false,
+});
+
 const runRewrite = () => {
+    if (useJsMode.value) {
+        runRewriteJs();
+    } else {
+        runRewritePhp();
+    }
+};
+
+const runRewritePhp = () => {
     isRewriting.value = true;
     abortController = new AbortController();
 
@@ -69,24 +90,104 @@ const runRewrite = () => {
     });
 };
 
+const runRewriteJs = async () => {
+    isRewriting.value = true;
+    jsProgress.value = {
+        processed: 0,
+        skipped: 0,
+        errors: 0,
+        total: 0,
+        current: 'Запуск...',
+        stopped: false,
+    };
+
+    const limit = rewriteForm.limit ? parseInt(rewriteForm.limit) : null;
+    let processedCount = 0;
+
+    try {
+        while (true) {
+            // Check if stopped
+            if (jsProgress.value.stopped) {
+                jsProgress.value.current = 'Остановлено пользователем';
+                break;
+            }
+
+            // Check if limit reached
+            if (limit && processedCount >= limit) {
+                jsProgress.value.current = `Достигнут лимит: ${limit} статей`;
+                break;
+            }
+
+            jsProgress.value.current = 'Обработка статьи...';
+
+            const response = await axios.post(route('sites.rewrite.one', props.site.id), {
+                author_id: rewriteForm.author_id,
+                category_id: rewriteForm.category_id,
+                offset: 0, // Всегда 0, т.к. обработанные статьи помечаются и исключаются
+            });
+
+            const result = response.data;
+            jsProgress.value.total = result.total || 0;
+
+            if (result.status === 'done') {
+                jsProgress.value.current = result.message || 'Готово';
+                break;
+            }
+
+            if (result.status === 'processed') {
+                jsProgress.value.processed++;
+                processedCount++;
+                jsProgress.value.current = `✓ ${result.article_title || 'Статья'}`;
+            } else if (result.status === 'skipped') {
+                jsProgress.value.skipped++;
+                jsProgress.value.current = `⊘ Пропущено: ${result.article_title || 'Статья'}`;
+            } else if (result.status === 'error') {
+                jsProgress.value.errors++;
+                jsProgress.value.current = `✗ Ошибка: ${result.message}`;
+            }
+
+            // Check if no more articles
+            if (!result.has_more) {
+                jsProgress.value.current = 'Все статьи обработаны';
+                break;
+            }
+
+            // Small delay to prevent overwhelming the server
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+    } catch (e) {
+        jsProgress.value.errors++;
+        jsProgress.value.current = `Ошибка: ${e.response?.data?.message || e.message}`;
+    } finally {
+        isRewriting.value = false;
+        // Refresh page to update logs
+        router.reload({ only: ['logs'] });
+    }
+};
+
 const isStopping = ref(false);
 
 const stopRewrite = async () => {
     if (confirm('Вы уверены, что хотите остановить рерайт?')) {
         isStopping.value = true;
 
-        try {
-            // Send stop signal to server
-            await axios.post(route('sites.rewrite.stop', props.site.id));
-        } catch (e) {
-            console.error('Failed to send stop signal:', e);
-        }
+        if (useJsMode.value) {
+            // JS mode: just set the flag
+            jsProgress.value.stopped = true;
+        } else {
+            // PHP mode: send stop signal to server
+            try {
+                await axios.post(route('sites.rewrite.stop', props.site.id));
+            } catch (e) {
+                console.error('Failed to send stop signal:', e);
+            }
 
-        // Cancel client-side request
-        if (abortController) {
-            abortController.abort();
+            // Cancel client-side request
+            if (abortController) {
+                abortController.abort();
+            }
+            router.cancel();
         }
-        router.cancel();
 
         isRewriting.value = false;
         isStopping.value = false;
@@ -370,6 +471,18 @@ const successCount = () => {
                         </div>
                     </div>
 
+                    <!-- JS Mode Toggle -->
+                    <div class="mt-4 flex items-center gap-3">
+                        <input id="use_js_mode" type="checkbox" v-model="useJsMode"
+                            class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" />
+                        <label for="use_js_mode" class="text-sm font-medium text-gray-700">
+                            Переписывать с помощью JS (рекомендуется)
+                        </label>
+                        <span class="text-xs text-gray-500">
+                            — обрабатывает по одной статье, избегая таймаутов
+                        </span>
+                    </div>
+
                     <div class="mt-6 flex items-center gap-3">
                         <button type="button" @click="runRewrite" :disabled="isRewriting"
                             class="inline-flex items-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:opacity-75">
@@ -404,8 +517,37 @@ const successCount = () => {
                         </button>
                     </div>
 
-                    <!-- Results notification -->
-                    <div v-if="flash.results" class="mt-4 rounded-lg border p-4"
+                    <!-- JS Mode Progress -->
+                    <div v-if="useJsMode && (isRewriting || jsProgress.processed > 0 || jsProgress.errors > 0)" 
+                        class="mt-4 rounded-lg border border-indigo-200 bg-indigo-50 p-4">
+                        <h3 class="font-medium mb-2 text-indigo-800">
+                            Прогресс рерайта (JS-режим)
+                        </h3>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-3">
+                            <div>
+                                <span class="text-gray-600">Осталось:</span>
+                                <span class="ml-1 font-semibold">{{ jsProgress.total }}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-600">Успешно:</span>
+                                <span class="ml-1 font-semibold text-green-600">{{ jsProgress.processed }}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-600">Пропущено:</span>
+                                <span class="ml-1 font-semibold text-yellow-600">{{ jsProgress.skipped }}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-600">Ошибок:</span>
+                                <span class="ml-1 font-semibold text-red-600">{{ jsProgress.errors }}</span>
+                            </div>
+                        </div>
+                        <div class="text-sm text-indigo-700 truncate">
+                            {{ jsProgress.current }}
+                        </div>
+                    </div>
+
+                    <!-- Results notification (PHP mode) -->
+                    <div v-if="!useJsMode && flash.results" class="mt-4 rounded-lg border p-4"
                         :class="flash.results.processed >= (flash.results.target || 0) ? 'border-green-200 bg-green-50' : 'border-yellow-200 bg-yellow-50'">
                         <h3 class="font-medium mb-2"
                             :class="flash.results.processed >= (flash.results.target || 0) ? 'text-green-800' : 'text-yellow-800'">
