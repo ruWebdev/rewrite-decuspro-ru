@@ -429,7 +429,7 @@ class RewriteService
 
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
             try {
-                $response = Http::timeout(60)
+                $response = Http::timeout(180)
                     ->withHeaders([
                         'Authorization' => 'Bearer ' . $this->settings->deepseek_api,
                         'Content-Type' => 'application/json',
@@ -532,7 +532,7 @@ class RewriteService
         $linkPrompt = "Впиши в основной текст органично этот URL \"{$link->url}\" в виде гиперссылки. Верни только обновлённый текст без пояснений.";
 
         try {
-            $response = Http::timeout(60)
+            $response = Http::timeout(180)
                 ->withHeaders([
                     'Authorization' => 'Bearer ' . $this->settings->deepseek_api,
                     'Content-Type' => 'application/json',
